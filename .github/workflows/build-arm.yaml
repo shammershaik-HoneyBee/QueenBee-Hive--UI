@@ -1,25 +1,22 @@
 name: Build Linux ARM64
 
 on:
-  workflow_dispatch: # Allows manual triggering
+  workflow_dispatch:
   push:
     branches:
       - main
 
 jobs:
-  build-aarch64:
-    # Use GitHub's native ARM runner for Linux
-    runs-on: ubuntu-24.04-arm 
-    
+  publish-tauri:
     permissions:
-      contents: write  # Required to create releases or upload artifacts
-
+      contents: write
+    # Using the native ARM runner (no cross-compilation needed)
+    runs-on: ubuntu-22.04-arm
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Install dependencies (Linux)
-        # Tauri v2 requires webkit2gtk-4.1 (not 4.0 like v1 did)
+      - name: install dependencies
+        # Install standard build tools + Tauri v2 Linux requirements
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -33,27 +30,26 @@ jobs:
             libayatana-appindicator3-dev \
             librsvg2-dev
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Setup Node.js
+      - name: setup node
         uses: actions/setup-node@v4
         with:
-          node-version: 'lts/*'
-          cache: 'bun' # or 'yarn', 'pnpm', 'bun'
+          node-version: lts/*
+          # REMOVED "cache: 'npm'" to fix your "lock file not found" error.
+          # If you commit package-lock.json later, you can add this back.
 
-      - name: Install Frontend Dependencies
-        # Adjust this if you use yarn/pnpm/bun
-        run: bun install
+      - name: install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-unknown-linux-gnu
 
-      - name: Build Tauri App
-        uses: tauri-apps/tauri-action@v0
+      - name: install frontend dependencies
+        run: npm install
+
+      - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          # This action will build the app and upload artifacts automatically.
-          # Because we are on an ARM runner, it builds aarch64 by default.
-          tagName: v__VERSION__ # Creates a release tag (optional)
+          tagName: app-v__VERSION__
           releaseName: 'App v__VERSION__'
           releaseBody: 'See the assets to download this version and install.'
           releaseDraft: true
