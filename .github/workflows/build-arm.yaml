@@ -40,11 +40,11 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 'lts/*'
-          cache: 'npm' # or 'yarn', 'pnpm', 'bun'
+          cache: 'bun' # or 'yarn', 'pnpm', 'bun'
 
       - name: Install Frontend Dependencies
         # Adjust this if you use yarn/pnpm/bun
-        run: npm install
+        run: bun install
 
       - name: Build Tauri App
         uses: tauri-apps/tauri-action@v0
