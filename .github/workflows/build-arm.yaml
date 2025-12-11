@@ -1,0 +1,60 @@
+name: Build Linux ARM64
+
+on:
+  workflow_dispatch: # Allows manual triggering
+  push:
+    branches:
+      - main
+
+jobs:
+  build-aarch64:
+    # Use GitHub's native ARM runner for Linux
+    runs-on: ubuntu-24.04-arm 
+    
+    permissions:
+      contents: write  # Required to create releases or upload artifacts
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies (Linux)
+        # Tauri v2 requires webkit2gtk-4.1 (not 4.0 like v1 did)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libssl-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 'lts/*'
+          cache: 'npm' # or 'yarn', 'pnpm', 'bun'
+
+      - name: Install Frontend Dependencies
+        # Adjust this if you use yarn/pnpm/bun
+        run: npm install
+
+      - name: Build Tauri App
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          # This action will build the app and upload artifacts automatically.
+          # Because we are on an ARM runner, it builds aarch64 by default.
+          tagName: v__VERSION__ # Creates a release tag (optional)
+          releaseName: 'App v__VERSION__'
+          releaseBody: 'See the assets to download this version and install.'
+          releaseDraft: true
+          prerelease: false
