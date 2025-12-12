@@ -106,36 +106,29 @@ function EyeTracker() {
         const scene = new THREE.Scene();
         sceneRef.current = scene;
 
-        // Create gradient background
-        const canvas = document.createElement('canvas');
-        canvas.width = 512;
-        canvas.height = 512;
-        const context = canvas.getContext('2d');
-        if (context) {
-            const gradient = context.createRadialGradient(256, 256, 0, 256, 256, 256);
-            gradient.addColorStop(0, '#000000');
-            gradient.addColorStop(0.5, '#000000');
-            gradient.addColorStop(1, '#000000');
-            context.fillStyle = gradient;
-            context.fillRect(0, 0, 512, 512);
-        }
-        const texture = new THREE.CanvasTexture(canvas);
-        scene.background = texture;
+        // Set solid black background (simpler than canvas texture)
+        scene.background = new THREE.Color(0x000000);
 
         // Setup camera
         const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
         cameraRef.current = camera;
         camera.position.z = 8;
 
-        // Create renderer
+        // Create renderer with proper color management
         const renderer = new THREE.WebGLRenderer({
             canvas: canvasRef.current!,
-            antialias: false,
-            powerPreference: 'low-power'
+            antialias: true,
+            alpha: false,
+            powerPreference: 'default'
         });
         rendererRef.current = renderer;
         renderer.setSize(window.innerWidth, window.innerHeight);
-        renderer.setPixelRatio(1);
+        renderer.setPixelRatio(window.devicePixelRatio);
+        
+        // Critical: Set proper color space for correct rendering
+        renderer.outputColorSpace = THREE.SRGBColorSpace;
+        renderer.toneMapping = THREE.ACESFilmicToneMapping;
+        renderer.toneMappingExposure = 1.0;
 
         // Lighting setup
         const ambientLight = new THREE.AmbientLight(0x404040, 0.3);
@@ -160,14 +153,19 @@ function EyeTracker() {
 
         // Load 3D model
         const loader = new GLTFLoader();
-        loader.load('/Normal.glb', (gltf) => {
+        
+        // Use relative path for Tauri compatibility
+        const modelPath = 'Normal.glb';
+        console.log('Loading model from:', modelPath);
+        
+        loader.load(modelPath, (gltf) => {
+            console.log('Model loaded successfully');
             const model = gltf.scene;
-            const width = window.innerWidth;
             const height = window.innerHeight;
 
-            // Scale to fit screen height
-            const baseScale = Math.min(width, height) / 480;
-            const scaleFactor = Math.max(baseScale * 55, 25);
+            // Scale to fit screen height - use height as the primary factor
+            // Adjust the multiplier to make model fit within the viewport
+            const scaleFactor = (height / 480) * 38;
             model.scale.set(scaleFactor, scaleFactor, scaleFactor);
 
             model.position.set(0, 0, 0);
@@ -181,7 +179,7 @@ function EyeTracker() {
 
             scene.add(model);
 
-            // Setup materials
+            // Setup materials with proper color space handling
             model.traverse((child) => {
                 if ((child as THREE.Mesh).isMesh) {
                     const mesh = child as THREE.Mesh;
@@ -190,6 +188,15 @@ function EyeTracker() {
                         materials.forEach((material, index) => {
                             if ((material as THREE.MeshStandardMaterial).isMeshStandardMaterial) {
                                 const stdMaterial = material as THREE.MeshStandardMaterial;
+                                
+                                // Ensure textures use correct color space
+                                if (stdMaterial.map) {
+                                    stdMaterial.map.colorSpace = THREE.SRGBColorSpace;
+                                }
+                                if (stdMaterial.emissiveMap) {
+                                    stdMaterial.emissiveMap.colorSpace = THREE.SRGBColorSpace;
+                                }
+                                
                                 if (child.name?.includes('eye')) {
                                     stdMaterial.metalness = 0.9;
                                     stdMaterial.roughness = 0.1;
@@ -236,10 +243,12 @@ function EyeTracker() {
             connectWebSocket();
         },
             (xhr) => {
-                console.log(`Model loading: ${(xhr.loaded / xhr.total * 100).toFixed(0)}% loaded`);
+                const percent = xhr.total > 0 ? (xhr.loaded / xhr.total * 100).toFixed(0) : 'unknown';
+                console.log(`Model loading: ${percent}% loaded`);
             },
             (error) => {
                 console.error('Error loading model:', error);
+                console.error('Failed to load GLB file. Check if Normal.glb exists in public folder.');
             }
         );
 
