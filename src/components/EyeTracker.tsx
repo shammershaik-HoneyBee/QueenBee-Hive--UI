@@ -28,8 +28,13 @@ function EyeTracker() {
     const animationFrameRef = useRef<number | null>(null);
     const wsRef = useRef<WebSocket | null>(null);
     const reconnectTimeoutRef = useRef<number | null>(null);
+    const modelRef = useRef<THREE.Object3D | null>(null);
 
     const [isLoading, setIsLoading] = useState(true);
+    const [showSettings, setShowSettings] = useState(false);
+    const [xOffset, setXOffset] = useState(0);
+    const [yOffset, setYOffset] = useState(0);
+    const [scaleMultiplier, setScaleMultiplier] = useState(1.0);
 
     // Update eye positions based on face tracking data
     const updateEyePositions = (data: FaceTrackingData) => {
@@ -101,6 +106,39 @@ function EyeTracker() {
         wsRef.current = ws;
     };
 
+    // Keyboard shortcut handler for settings panel
+    useEffect(() => {
+        const handleKeyDown = (e: KeyboardEvent) => {
+            if (e.ctrlKey && e.key === 'h') {
+                e.preventDefault();
+                setShowSettings(prev => !prev);
+            }
+        };
+
+        window.addEventListener('keydown', handleKeyDown);
+        return () => window.removeEventListener('keydown', handleKeyDown);
+    }, []);
+
+    // Apply position and scale adjustments to model
+    useEffect(() => {
+        if (modelRef.current) {
+            const model = modelRef.current;
+            const height = window.innerHeight;
+            
+            // Apply scale
+            const baseScaleFactor = (height / 480) * 38;
+            const finalScale = baseScaleFactor * scaleMultiplier;
+            model.scale.set(finalScale, finalScale, finalScale);
+            
+            // Recenter and apply offsets
+            const box = new THREE.Box3().setFromObject(model);
+            const center = box.getCenter(new THREE.Vector3());
+            model.position.x = -center.x + xOffset;
+            model.position.y = -center.y + yOffset;
+            model.position.z = -center.z;
+        }
+    }, [xOffset, yOffset, scaleMultiplier]);
+
     useEffect(() => {
         // Create Three.js scene
         const scene = new THREE.Scene();
@@ -161,6 +199,7 @@ function EyeTracker() {
         loader.load(modelPath, (gltf) => {
             console.log('Model loaded successfully');
             const model = gltf.scene;
+            modelRef.current = model;
             const height = window.innerHeight;
 
             // Scale to fit screen height - use height as the primary factor
@@ -342,6 +381,147 @@ function EyeTracker() {
                     height: '100%',
                 }}
             />
+
+            {showSettings && (
+                <div
+                    style={{
+                        position: 'absolute',
+                        top: '20px',
+                        right: '20px',
+                        backgroundColor: 'rgba(0, 0, 0, 0.7)',
+                        color: '#fff',
+                        padding: '20px',
+                        borderRadius: '8px',
+                        fontFamily: 'monospace',
+                        fontSize: '14px',
+                        zIndex: 1000,
+                        minWidth: '300px',
+                    }}
+                >
+                    <h3 style={{ margin: '0 0 15px 0', fontSize: '16px' }}>
+                        Position & Scale Adjustments
+                    </h3>
+                    
+                    <div style={{ marginBottom: '15px' }}>
+                        <label style={{ display: 'block', marginBottom: '5px' }}>
+                            X Offset: {xOffset.toFixed(3)}
+                        </label>
+                        <input
+                            type="range"
+                            min="-1"
+                            max="1"
+                            step="0.01"
+                            value={xOffset}
+                            onChange={(e) => setXOffset(parseFloat(e.target.value))}
+                            style={{ width: '100%' }}
+                        />
+                        <input
+                            type="number"
+                            min="-1"
+                            max="1"
+                            step="0.01"
+                            value={xOffset}
+                            onChange={(e) => setXOffset(parseFloat(e.target.value))}
+                            style={{
+                                width: '100%',
+                                marginTop: '5px',
+                                padding: '5px',
+                                backgroundColor: 'rgba(255, 255, 255, 0.1)',
+                                color: '#fff',
+                                border: '1px solid rgba(255, 255, 255, 0.3)',
+                                borderRadius: '4px',
+                            }}
+                        />
+                    </div>
+
+                    <div style={{ marginBottom: '15px' }}>
+                        <label style={{ display: 'block', marginBottom: '5px' }}>
+                            Y Offset: {yOffset.toFixed(3)}
+                        </label>
+                        <input
+                            type="range"
+                            min="-1"
+                            max="1"
+                            step="0.01"
+                            value={yOffset}
+                            onChange={(e) => setYOffset(parseFloat(e.target.value))}
+                            style={{ width: '100%' }}
+                        />
+                        <input
+                            type="number"
+                            min="-1"
+                            max="1"
+                            step="0.01"
+                            value={yOffset}
+                            onChange={(e) => setYOffset(parseFloat(e.target.value))}
+                            style={{
+                                width: '100%',
+                                marginTop: '5px',
+                                padding: '5px',
+                                backgroundColor: 'rgba(255, 255, 255, 0.1)',
+                                color: '#fff',
+                                border: '1px solid rgba(255, 255, 255, 0.3)',
+                                borderRadius: '4px',
+                            }}
+                        />
+                    </div>
+
+                    <div style={{ marginBottom: '15px' }}>
+                        <label style={{ display: 'block', marginBottom: '5px' }}>
+                            Scale Multiplier: {scaleMultiplier.toFixed(2)}
+                        </label>
+                        <input
+                            type="range"
+                            min="0.5"
+                            max="2.0"
+                            step="0.01"
+                            value={scaleMultiplier}
+                            onChange={(e) => setScaleMultiplier(parseFloat(e.target.value))}
+                            style={{ width: '100%' }}
+                        />
+                        <input
+                            type="number"
+                            min="0.5"
+                            max="2.0"
+                            step="0.01"
+                            value={scaleMultiplier}
+                            onChange={(e) => setScaleMultiplier(parseFloat(e.target.value))}
+                            style={{
+                                width: '100%',
+                                marginTop: '5px',
+                                padding: '5px',
+                                backgroundColor: 'rgba(255, 255, 255, 0.1)',
+                                color: '#fff',
+                                border: '1px solid rgba(255, 255, 255, 0.3)',
+                                borderRadius: '4px',
+                            }}
+                        />
+                    </div>
+
+                    <div style={{ 
+                        marginTop: '20px', 
+                        padding: '10px', 
+                        backgroundColor: 'rgba(255, 255, 255, 0.1)',
+                        borderRadius: '4px',
+                        fontSize: '12px',
+                    }}>
+                        <div style={{ marginBottom: '5px' }}>
+                            <strong>Copy these values to code:</strong>
+                        </div>
+                        <div>xOffset: {xOffset.toFixed(3)}</div>
+                        <div>yOffset: {yOffset.toFixed(3)}</div>
+                        <div>scaleMultiplier: {scaleMultiplier.toFixed(2)}</div>
+                    </div>
+
+                    <div style={{ 
+                        marginTop: '15px', 
+                        fontSize: '12px',
+                        opacity: 0.7,
+                    }}>
+                        Press Ctrl+H to close
+                    </div>
+                </div>
+            )}
         </div>
     );
 }
