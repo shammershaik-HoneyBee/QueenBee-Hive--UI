@@ -32,9 +32,9 @@ function EyeTracker() {
 
     const [isLoading, setIsLoading] = useState(true);
     const [showSettings, setShowSettings] = useState(false);
-    const [xOffset, setXOffset] = useState(0);
-    const [yOffset, setYOffset] = useState(0);
-    const [scaleMultiplier, setScaleMultiplier] = useState(1.0);
+    const [xOffset, setXOffset] = useState(-0.890);
+    const [yOffset, setYOffset] = useState(0.050);
+    const [scaleMultiplier, setScaleMultiplier] = useState(1.32);
 
     // Update eye positions based on face tracking data
     const updateEyePositions = (data: FaceTrackingData) => {
@@ -202,18 +202,18 @@ function EyeTracker() {
             modelRef.current = model;
             const height = window.innerHeight;
 
-            // Scale to fit screen height - use height as the primary factor
-            // Adjust the multiplier to make model fit within the viewport
-            const scaleFactor = (height / 480) * 38;
-            model.scale.set(scaleFactor, scaleFactor, scaleFactor);
+            // Scale to fit screen height and apply user multiplier
+            const baseScaleFactor = (height / 480) * 38;
+            const finalScale = baseScaleFactor * scaleMultiplier;
+            model.scale.set(finalScale, finalScale, finalScale);
 
             model.position.set(0, 0, 0);
 
-            // Center the model
+            // Center the model and apply initial offsets from state
             const box = new THREE.Box3().setFromObject(model);
             const center = box.getCenter(new THREE.Vector3());
-            model.position.x = -center.x;
-            model.position.y = -center.y;
+            model.position.x = -center.x + xOffset;
+            model.position.y = -center.y + yOffset;
             model.position.z = -center.z;
 
             scene.add(model);
