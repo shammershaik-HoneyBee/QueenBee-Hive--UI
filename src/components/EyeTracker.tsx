@@ -1,6 +1,8 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useCallback } from 'react';
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 
 interface FaceTrackingData {
     face_detected: boolean;
@@ -16,6 +18,17 @@ interface FaceTrackingData {
     timestamp?: string;
 }
 
+interface WifiStatus {
+    connected: boolean;
+    ssid: string | null;
+}
+
+interface QrCodeResponse {
+    exists: boolean;
+    data: string | null;
+    error: string | null;
+}
+
 function EyeTracker() {
     const canvasRef = useRef<HTMLCanvasElement>(null);
     const sceneRef = useRef<THREE.Scene | null>(null);
@@ -29,12 +42,109 @@ function EyeTracker() {
     const wsRef = useRef<WebSocket | null>(null);
     const reconnectTimeoutRef = useRef<number | null>(null);
     const modelRef = useRef<THREE.Object3D | null>(null);
+    const wifiPollIntervalRef = useRef<number | null>(null);
+    const successBannerTimeoutRef = useRef<number | null>(null);
+    const hasShownSuccessBannerRef = useRef<boolean>(false);
 
     const [isLoading, setIsLoading] = useState(true);
     const [showSettings, setShowSettings] = useState(false);
     const [xOffset, setXOffset] = useState(-0.890);
     const [yOffset, setYOffset] = useState(0.050);
     const [scaleMultiplier, setScaleMultiplier] = useState(1.32);
+    
+    // WiFi and QR code state
+    const [wifiConnected, setWifiConnected] = useState(true);
+    const [qrCodeImage, setQrCodeImage] = useState<string | null>(null);
+    const [showSuccessBanner, setShowSuccessBanner] = useState(false);
+    const [connectedSsid, setConnectedSsid] = useState<string | null>(null);
+
+    // Check WiFi status
+    const checkWifiStatus = useCallback(async () => {
+        try {
+            const status = await invoke<WifiStatus>('check_wifi_status');
+            
+            // If WiFi just connected and we haven't shown the banner yet
+            if (status.connected && !hasShownSuccessBannerRef.current) {
+                // Check if we were previously disconnected (qrCodeImage was shown)
+                setWifiConnected(prevConnected => {
+                    if (!prevConnected) {
+                        // We were disconnected, now connected - show success banner
+                        hasShownSuccessBannerRef.current = true;
+                        setShowSuccessBanner(true);
+                        setConnectedSsid(status.ssid);
+                        
+                        // Hide success banner after 10 seconds
+                        if (successBannerTimeoutRef.current) {
+                            clearTimeout(successBannerTimeoutRef.current);
+                        }
+                        successBannerTimeoutRef.current = window.setTimeout(() => {
+                            setShowSuccessBanner(false);
+                        }, 10000);
+                    }
+                    return status.connected;
+                });
+            } else {
+                setWifiConnected(status.connected);
+                setConnectedSsid(status.ssid);
+            }
+            
+            // Reset the banner flag when WiFi disconnects so it can show again next time
+            if (!status.connected) {
+                hasShownSuccessBannerRef.current = false;
+            }
+        } catch (error) {
+            console.error('Failed to check WiFi status:', error);
+            setWifiConnected(false);
+            hasShownSuccessBannerRef.current = false;
+        }
+    }, []);
+
+    // Fetch QR code image
+    const fetchQrCode = useCallback(async () => {
+        try {
+            const response = await invoke<QrCodeResponse>('get_qr_code_image');
+            if (response.exists && response.data) {
+                setQrCodeImage(response.data);
+            } else {
+                setQrCodeImage(null);
+            }
+        } catch (error) {
+            console.error('Failed to fetch QR code:', error);
+            setQrCodeImage(null);
+        }
+    }, []);
+
+    // Setup WiFi polling and QR code file watcher
+    useEffect(() => {
+        // Initial checks
+        checkWifiStatus();
+        fetchQrCode();
+
+        // Poll WiFi status every 10 seconds
+        wifiPollIntervalRef.current = window.setInterval(() => {
+            checkWifiStatus();
+        }, 10000);
+
+        // Listen for QR code file changes from Rust backend
+        const unlistenPromise = listen<QrCodeResponse>('qr-code-changed', (event) => {
+            console.log('QR code file changed:', event.payload);
+            if (event.payload.exists && event.payload.data) {
+                setQrCodeImage(event.payload.data);
+            } else {
+                setQrCodeImage(null);
+            }
+        });
+
+        return () => {
+            if (wifiPollIntervalRef.current) {
+                clearInterval(wifiPollIntervalRef.current);
+            }
+            if (successBannerTimeoutRef.current) {
+                clearTimeout(successBannerTimeoutRef.current);
+            }
+            unlistenPromise.then(unlisten => unlisten());
+        };
+    }, [checkWifiStatus, fetchQrCode]);
 
     // Update eye positions based on face tracking data
     const updateEyePositions = (data: FaceTrackingData) => {
@@ -339,6 +449,9 @@ function EyeTracker() {
         };
     }, []);
 
+    // Determine if QR overlay should be shown
+    const showQrOverlay = !wifiConnected && qrCodeImage;
+
     return (
         <div
             style={{
@@ -374,13 +487,139 @@ function EyeTracker() {
                 </div>
             )}
 
+            {/* Eye Tracker Canvas - blurred when QR overlay is shown */}
             <canvas
                 ref={canvasRef}
                 style={{
                     width: '100%',
                     height: '100%',
+                    filter: showQrOverlay ? 'blur(20px)' : 'none',
+                    transition: 'filter 0.3s ease-in-out',
                 }}
             />
+
+            {/* QR Code Overlay - shown when WiFi is not connected */}
+            {showQrOverlay && (
+                <div
+                    style={{
+                        position: 'absolute',
+                        top: 0,
+                        left: 0,
+                        width: '100%',
+                        height: '100%',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        justifyContent: 'center',
+                        alignItems: 'center',
+                        zIndex: 100,
+                        backgroundColor: 'rgba(0, 0, 0, 0.5)',
+                    }}
+                >
+                    <div
+                        style={{
+                            backgroundColor: '#fff',
+                            padding: '30px',
+                            borderRadius: '20px',
+                            boxShadow: '0 10px 40px rgba(0, 0, 0, 0.5)',
+                            display: 'flex',
+                            flexDirection: 'column',
+                            alignItems: 'center',
+                            maxWidth: '90%',
+                        }}
+                    >
+                        <h2
+                            style={{
+                                margin: '0 0 20px 0',
+                                color: '#333',
+                                fontSize: '24px',
+                                textAlign: 'center',
+                            }}
+                        >
+                            📱 Connect to WiFi
+                        </h2>
+                        <p
+                            style={{
+                                margin: '0 0 20px 0',
+                                color: '#666',
+                                fontSize: '16px',
+                                textAlign: 'center',
+                            }}
+                        >
+                            Scan with Honeybee mobile app
+                        </p>
+                        <img
+                            src={qrCodeImage}
+                            alt="WiFi Setup QR Code"
+                            style={{
+                                width: '256px',
+                                height: '256px',
+                                borderRadius: '10px',
+                            }}
+                        />
+                        <p
+                            style={{
+                                margin: '20px 0 0 0',
+                                color: '#999',
+                                fontSize: '14px',
+                                textAlign: 'center',
+                            }}
+                        >
+                            No WiFi connection detected
+                        </p>
+                    </div>
+                </div>
+            )}
+
+            {/* Success Banner - shown for 10 seconds after WiFi connects */}
+            {showSuccessBanner && (
+                <div
+                    style={{
+                        position: 'absolute',
+                        top: '50%',
+                        left: '50%',
+                        transform: 'translate(-50%, -50%)',
+                        zIndex: 200,
+                        backgroundColor: 'rgba(34, 197, 94, 0.95)',
+                        padding: '30px 50px',
+                        borderRadius: '20px',
+                        boxShadow: '0 10px 40px rgba(0, 0, 0, 0.3)',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        alignItems: 'center',
+                        animation: 'fadeIn 0.3s ease-in-out',
+                    }}
+                >
+                    <div
+                        style={{
+                            fontSize: '60px',
+                            marginBottom: '15px',
+                        }}
+                    >
+                        ✅
+                    </div>
+                    <h2
+                        style={{
+                            margin: '0 0 10px 0',
+                            color: '#fff',
+                            fontSize: '28px',
+                            fontWeight: 'bold',
+                        }}
+                    >
+                        Connected!
+                    </h2>
+                    {connectedSsid && (
+                        <p
+                            style={{
+                                margin: 0,
+                                color: 'rgba(255, 255, 255, 0.9)',
+                                fontSize: '18px',
+                            }}
+                        >
+                            {connectedSsid}
+                        </p>
+                    )}
+                </div>
+            )}
 
             {showSettings && (
                 <div
