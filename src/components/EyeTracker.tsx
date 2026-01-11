@@ -29,6 +29,26 @@ interface QrCodeResponse {
     error: string | null;
 }
 
+// Provisioning status types (matching honeybee-ble-go IPC)
+type ProvisioningStatusType = 
+    | 'idle'
+    | 'connecting_wifi'
+    | 'wifi_connected'
+    | 'provisioning'
+    | 'starting_tunnel'
+    | 'success'
+    | 'error';
+
+interface ProvisioningStatus {
+    status: ProvisioningStatusType;
+    message: string;
+    progress?: number;
+    hostname?: string;
+    dashboard_hostname?: string;
+    error_details?: string;
+    retry_count?: number;
+}
+
 function EyeTracker() {
     const canvasRef = useRef<HTMLCanvasElement>(null);
     const sceneRef = useRef<THREE.Scene | null>(null);
@@ -57,6 +77,10 @@ function EyeTracker() {
     const [qrCodeImage, setQrCodeImage] = useState<string | null>(null);
     const [showSuccessBanner, setShowSuccessBanner] = useState(false);
     const [connectedSsid, setConnectedSsid] = useState<string | null>(null);
+    
+    // Provisioning state
+    const [provisioningStatus, setProvisioningStatus] = useState<ProvisioningStatus | null>(null);
+    const provisioningSuccessTimeoutRef = useRef<number | null>(null);
 
     // Check WiFi status
     const checkWifiStatus = useCallback(async () => {
@@ -126,12 +150,28 @@ function EyeTracker() {
         }, 10000);
 
         // Listen for QR code file changes from Rust backend
-        const unlistenPromise = listen<QrCodeResponse>('qr-code-changed', (event) => {
+        const unlistenQrPromise = listen<QrCodeResponse>('qr-code-changed', (event) => {
             console.log('QR code file changed:', event.payload);
             if (event.payload.exists && event.payload.data) {
                 setQrCodeImage(event.payload.data);
             } else {
                 setQrCodeImage(null);
+            }
+        });
+
+        // Listen for provisioning status updates from honeybee-ble-go via IPC
+        const unlistenProvisioningPromise = listen<ProvisioningStatus>('provisioning-status', (event) => {
+            console.log('Provisioning status update:', event.payload);
+            setProvisioningStatus(event.payload);
+            
+            // Clear provisioning status after success (after 15 seconds)
+            if (event.payload.status === 'success') {
+                if (provisioningSuccessTimeoutRef.current) {
+                    clearTimeout(provisioningSuccessTimeoutRef.current);
+                }
+                provisioningSuccessTimeoutRef.current = window.setTimeout(() => {
+                    setProvisioningStatus(null);
+                }, 15000);
             }
         });
 
@@ -142,7 +182,11 @@ function EyeTracker() {
             if (successBannerTimeoutRef.current) {
                 clearTimeout(successBannerTimeoutRef.current);
             }
-            unlistenPromise.then(unlisten => unlisten());
+            if (provisioningSuccessTimeoutRef.current) {
+                clearTimeout(provisioningSuccessTimeoutRef.current);
+            }
+            unlistenQrPromise.then(unlisten => unlisten());
+            unlistenProvisioningPromise.then(unlisten => unlisten());
         };
     }, [checkWifiStatus, fetchQrCode]);
 
@@ -449,8 +493,36 @@ function EyeTracker() {
         };
     }, []);
 
-    // Determine if QR overlay should be shown
-    const showQrOverlay = !wifiConnected && qrCodeImage;
+    // Determine if QR overlay should be shown (not during provisioning)
+    const showQrOverlay = !wifiConnected && qrCodeImage && !provisioningStatus;
+    
+    // Determine if provisioning overlay should be shown
+    const showProvisioningOverlay = provisioningStatus && 
+        ['connecting_wifi', 'wifi_connected', 'provisioning', 'starting_tunnel', 'success', 'error'].includes(provisioningStatus.status);
+
+    // Get provisioning status display info
+    const getProvisioningDisplayInfo = () => {
+        if (!provisioningStatus) return { icon: '', title: '', color: '' };
+        
+        switch (provisioningStatus.status) {
+            case 'connecting_wifi':
+                return { icon: '📶', title: 'Connecting to WiFi...', color: 'rgba(59, 130, 246, 0.95)' };
+            case 'wifi_connected':
+                return { icon: '✅', title: 'WiFi Connected', color: 'rgba(34, 197, 94, 0.95)' };
+            case 'provisioning':
+                return { icon: '🔐', title: 'Provisioning Device...', color: 'rgba(139, 92, 246, 0.95)' };
+            case 'starting_tunnel':
+                return { icon: '🚀', title: 'Starting Secure Tunnel...', color: 'rgba(236, 72, 153, 0.95)' };
+            case 'success':
+                return { icon: '🎉', title: 'Setup Complete!', color: 'rgba(34, 197, 94, 0.95)' };
+            case 'error':
+                return { icon: '❌', title: 'Setup Failed', color: 'rgba(239, 68, 68, 0.95)' };
+            default:
+                return { icon: '⏳', title: 'Processing...', color: 'rgba(107, 114, 128, 0.95)' };
+        }
+    };
+    
+    const provisioningDisplay = getProvisioningDisplayInfo();
 
     return (
         <div
@@ -487,13 +559,13 @@ function EyeTracker() {
                 </div>
             )}
 
-            {/* Eye Tracker Canvas - blurred when QR overlay is shown */}
+            {/* Eye Tracker Canvas - blurred when QR or provisioning overlay is shown */}
             <canvas
                 ref={canvasRef}
                 style={{
                     width: '100%',
                     height: '100%',
-                    filter: showQrOverlay ? 'blur(20px)' : 'none',
+                    filter: (showQrOverlay || showProvisioningOverlay) ? 'blur(20px)' : 'none',
                     transition: 'filter 0.3s ease-in-out',
                 }}
             />
@@ -618,6 +690,184 @@ function EyeTracker() {
                             {connectedSsid}
                         </p>
                     )}
+                </div>
+            )}
+
+            {/* Provisioning Status Overlay */}
+            {showProvisioningOverlay && provisioningStatus && (
+                <div
+                    style={{
+                        position: 'absolute',
+                        top: 0,
+                        left: 0,
+                        width: '100%',
+                        height: '100%',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        justifyContent: 'center',
+                        alignItems: 'center',
+                        zIndex: 150,
+                        backgroundColor: 'rgba(0, 0, 0, 0.6)',
+                    }}
+                >
+                    <div
+                        style={{
+                            backgroundColor: provisioningDisplay.color,
+                            padding: '40px 60px',
+                            borderRadius: '24px',
+                            boxShadow: '0 20px 60px rgba(0, 0, 0, 0.4)',
+                            display: 'flex',
+                            flexDirection: 'column',
+                            alignItems: 'center',
+                            minWidth: '400px',
+                            maxWidth: '600px',
+                        }}
+                    >
+                        {/* Animated Icon */}
+                        <div
+                            style={{
+                                fontSize: '80px',
+                                marginBottom: '20px',
+                                animation: provisioningStatus.status === 'error' ? 'none' : 'pulse 1.5s infinite',
+                            }}
+                        >
+                            {provisioningDisplay.icon}
+                        </div>
+                        
+                        {/* Title */}
+                        <h2
+                            style={{
+                                margin: '0 0 15px 0',
+                                color: '#fff',
+                                fontSize: '32px',
+                                fontWeight: 'bold',
+                                textAlign: 'center',
+                            }}
+                        >
+                            {provisioningDisplay.title}
+                        </h2>
+                        
+                        {/* Message */}
+                        <p
+                            style={{
+                                margin: '0 0 20px 0',
+                                color: 'rgba(255, 255, 255, 0.9)',
+                                fontSize: '18px',
+                                textAlign: 'center',
+                            }}
+                        >
+                            {provisioningStatus.message}
+                        </p>
+                        
+                        {/* Progress Bar (for non-error states) */}
+                        {provisioningStatus.status !== 'error' && provisioningStatus.status !== 'success' && (
+                            <div
+                                style={{
+                                    width: '100%',
+                                    height: '8px',
+                                    backgroundColor: 'rgba(255, 255, 255, 0.3)',
+                                    borderRadius: '4px',
+                                    overflow: 'hidden',
+                                    marginBottom: '15px',
+                                }}
+                            >
+                                <div
+                                    style={{
+                                        height: '100%',
+                                        backgroundColor: '#fff',
+                                        borderRadius: '4px',
+                                        width: provisioningStatus.progress ? `${provisioningStatus.progress}%` : '0%',
+                                        transition: 'width 0.5s ease-out',
+                                        animation: provisioningStatus.progress ? 'none' : 'indeterminate 1.5s infinite',
+                                    }}
+                                />
+                            </div>
+                        )}
+                        
+                        {/* Success Details */}
+                        {provisioningStatus.status === 'success' && provisioningStatus.hostname && (
+                            <div
+                                style={{
+                                    backgroundColor: 'rgba(255, 255, 255, 0.2)',
+                                    padding: '15px 25px',
+                                    borderRadius: '12px',
+                                    marginTop: '10px',
+                                }}
+                            >
+                                <p
+                                    style={{
+                                        margin: 0,
+                                        color: '#fff',
+                                        fontSize: '14px',
+                                        textAlign: 'center',
+                                    }}
+                                >
+                                    🏠 Home Assistant: <strong>{provisioningStatus.hostname}</strong>
+                                </p>
+                                {provisioningStatus.dashboard_hostname && (
+                                    <p
+                                        style={{
+                                            margin: '10px 0 0 0',
+                                            color: '#fff',
+                                            fontSize: '14px',
+                                            textAlign: 'center',
+                                        }}
+                                    >
+                                        📊 Dashboard: <strong>{provisioningStatus.dashboard_hostname}</strong>
+                                    </p>
+                                )}
+                            </div>
+                        )}
+                        
+                        {/* Error Details */}
+                        {provisioningStatus.status === 'error' && (
+                            <div
+                                style={{
+                                    backgroundColor: 'rgba(0, 0, 0, 0.2)',
+                                    padding: '15px 25px',
+                                    borderRadius: '12px',
+                                    marginTop: '10px',
+                                    maxWidth: '100%',
+                                }}
+                            >
+                                {provisioningStatus.error_details && (
+                                    <p
+                                        style={{
+                                            margin: '0 0 10px 0',
+                                            color: 'rgba(255, 255, 255, 0.9)',
+                                            fontSize: '14px',
+                                            textAlign: 'center',
+                                            wordBreak: 'break-word',
+                                        }}
+                                    >
+                                        {provisioningStatus.error_details}
+                                    </p>
+                                )}
+                                {provisioningStatus.retry_count !== undefined && provisioningStatus.retry_count > 0 && (
+                                    <p
+                                        style={{
+                                            margin: 0,
+                                            color: 'rgba(255, 255, 255, 0.7)',
+                                            fontSize: '13px',
+                                            textAlign: 'center',
+                                        }}
+                                    >
+                                        Attempt {provisioningStatus.retry_count} of 3
+                                    </p>
+                                )}
+                                <p
+                                    style={{
+                                        margin: '15px 0 0 0',
+                                        color: 'rgba(255, 255, 255, 0.8)',
+                                        fontSize: '14px',
+                                        textAlign: 'center',
+                                    }}
+                                >
+                                    Please try again from the mobile app
+                                </p>
+                            </div>
+                        )}
+                    </div>
                 </div>
             )}
 
