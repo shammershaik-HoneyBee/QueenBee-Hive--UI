@@ -2,6 +2,8 @@ use base64::{engine::general_purpose::STANDARD, Engine};
 use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::Serialize;
 use std::fs;
+use std::io::{Read, Write};
+use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::mpsc::channel;
@@ -173,4 +175,74 @@ pub fn start_qr_file_watcher(app_handle: AppHandle) {
             }
         }
     });
+}
+
+/// Get the path to the honeybee-ble IPC socket
+fn get_ipc_socket_path() -> PathBuf {
+    dirs::home_dir()
+        .map(|home| home.join(".config/honeybee/provisioning.sock"))
+        .unwrap_or_else(|| PathBuf::from("/tmp/honeybee-provisioning.sock"))
+}
+
+/// Response for retry command
+#[derive(Debug, Serialize, Clone)]
+pub struct RetryResponse {
+    pub success: bool,
+    pub message: String,
+}
+
+/// Trigger provisioning retry via IPC
+#[tauri::command]
+pub fn trigger_provisioning_retry() -> RetryResponse {
+    let socket_path = get_ipc_socket_path();
+    
+    if !socket_path.exists() {
+        return RetryResponse {
+            success: false,
+            message: "Provisioning service not running".to_string(),
+        };
+    }
+    
+    // Connect to IPC socket and send retry command
+    match UnixStream::connect(&socket_path) {
+        Ok(mut stream) => {
+            // Set timeout
+            if let Err(e) = stream.set_read_timeout(Some(Duration::from_secs(5))) {
+                eprintln!("Failed to set socket timeout: {}", e);
+            }
+            
+            // Send retry command as JSON
+            let retry_command = r#"{"command":"retry"}"#;
+            if let Err(e) = stream.write_all(retry_command.as_bytes()) {
+                return RetryResponse {
+                    success: false,
+                    message: format!("Failed to send retry command: {}", e),
+                };
+            }
+            
+            // Read response
+            let mut response = String::new();
+            match stream.read_to_string(&mut response) {
+                Ok(_) => {
+                    println!("Retry command response: {}", response);
+                    RetryResponse {
+                        success: true,
+                        message: "Retry triggered successfully".to_string(),
+                    }
+                }
+                Err(e) => {
+                    // Even if read fails, the command might have been received
+                    eprintln!("Failed to read response: {}", e);
+                    RetryResponse {
+                        success: true,
+                        message: "Retry triggered (no confirmation)".to_string(),
+                    }
+                }
+            }
+        }
+        Err(e) => RetryResponse {
+            success: false,
+            message: format!("Failed to connect to provisioning service: {}", e),
+        },
+    }
 }

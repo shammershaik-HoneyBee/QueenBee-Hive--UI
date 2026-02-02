@@ -18,13 +18,16 @@
         "fullscreen": true,
         "resizable": false,
         "decorations": false,
-        "additionalBrowserArgs": "--enable-features=NetworkService,NetworkServiceInProcess --autoplay-policy=no-user-gesture-required"
+        "additionalBrowserArgs": "--enable-features=NetworkService,NetworkServiceInProcess --autoplay-policy=no-user-gesture-required --use-fake-ui-for-media-stream"
       }
     ],
     "security": {
       "csp": "default-src 'self' asset: tauri: blob:; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: asset: tauri:; media-src 'self' blob: mediastream:; connect-src 'self' blob: ws://localhost:8765 ws://127.0.0.1:8765 ipc: http://ipc.localhost asset: tauri:; worker-src 'self' blob:; font-src 'self' data:;",
       "freezePrototype": false,
-      "capabilities": ["default"]
+      "capabilities": ["default"],
+      "headers": {
+        "Permissions-Policy": "camera=*, microphone=*"
+      }
     },
     "withGlobalTauri": true
   },

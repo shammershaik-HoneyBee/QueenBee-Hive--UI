@@ -8,7 +8,20 @@
     "core:event:default",
     "core:event:allow-listen",
     "core:event:allow-emit",
-    "opener:default"
+    "opener:default",
+    "fs:default",
+    "fs:allow-picture-read-recursive",
+    "fs:allow-picture-write-recursive",
+    "fs:allow-mkdir",
+    "fs:allow-exists",
+    {
+      "identifier": "fs:scope",
+      "allow": [
+        { "path": "$PICTURE" },
+        { "path": "$PICTURE/**" },
+        { "path": "$PICTURE/honeybee-camera/**" }
+      ]
+    }
   ],
   "platforms": ["linux", "macOS", "windows"]
 }

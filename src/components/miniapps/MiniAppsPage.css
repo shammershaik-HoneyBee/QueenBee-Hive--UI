@@ -1,0 +1,109 @@
+/* 
+ * Honeycomb/Hexagonal Grid Layout
+ * Creates a bee-inspired hexagonal tessellation pattern for mini apps
+ */
+
+.honeycomb-grid {
+  --hex-width: 130px;
+  --hex-height: 150px;
+  --hex-margin: 4px;
+  --row-offset: calc(var(--hex-width) / 2 + var(--hex-margin));
+  
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0;
+  padding: 2rem;
+}
+
+/* Honeycomb rows */
+.honeycomb-row {
+  display: flex;
+  justify-content: center;
+  gap: calc(var(--hex-margin) * 2);
+}
+
+/* Offset every other row for honeycomb effect */
+.honeycomb-row:nth-child(even) {
+  margin-top: calc(var(--hex-height) * -0.25);
+}
+
+.honeycomb-row:nth-child(odd):not(:first-child) {
+  margin-top: calc(var(--hex-height) * -0.25);
+}
+
+/* Hexagon tile container */
+.hexagon-tile {
+  width: var(--hex-width);
+  height: var(--hex-height);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  outline: none;
+  animation: hexFadeIn 0.5s ease-out backwards;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* No flex-direction column - hexagon itself contains everything */
+}
+
+/* Hexagon shape using clip-path */
+.hexagon {
+  width: calc(var(--hex-width) - 6px);
+  height: calc(var(--hex-height) - 8px);
+  clip-path: polygon(50% 0%, 100% 25%, 100% 75%, 50% 100%, 0% 75%, 0% 25%);
+  background: linear-gradient(135deg, rgba(39, 39, 42, 0.8) 0%, rgba(24, 24, 27, 0.9) 100%);
+  backdrop-filter: blur(10px);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.3s ease;
+  padding: 0.5rem;
+}
+
+/* Hexagon hover glow effect */
+.hexagon-tile:hover .hexagon {
+  box-shadow: 0 0 30px rgba(245, 158, 11, 0.3);
+  transform: scale(1.05);
+}
+
+.hexagon-tile:active .hexagon {
+  box-shadow: 0 0 20px rgba(245, 158, 11, 0.5);
+  transform: scale(0.98);
+}
+
+/* Animation for tiles appearing */
+@keyframes hexFadeIn {
+  from {
+    opacity: 0;
+    transform: scale(0.8) translateY(20px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+/* Responsive adjustments */
+@media (max-width: 480px) {
+  .honeycomb-grid {
+    --hex-width: 100px;
+    --hex-height: 115px;
+    --hex-margin: 3px;
+  }
+  
+  .hexagon svg {
+    width: 28px !important;
+    height: 28px !important;
+  }
+}
+
+/* Large screens */
+@media (min-width: 1024px) {
+  .honeycomb-grid {
+    --hex-width: 150px;
+    --hex-height: 173px;
+    --hex-margin: 6px;
+  }
+}

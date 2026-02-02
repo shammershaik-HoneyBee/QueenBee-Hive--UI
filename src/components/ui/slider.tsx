@@ -1,0 +1,53 @@
+"use client"
+
+import * as React from "react"
+import * as SliderPrimitive from "@radix-ui/react-slider"
+import { cn } from "@/lib/utils"
+
+interface SliderProps extends React.ComponentPropsWithoutRef<typeof SliderPrimitive.Root> {
+  trackClassName?: string
+  rangeClassName?: string
+  thumbClassName?: string
+}
+
+const Slider = React.forwardRef<
+  React.ElementRef<typeof SliderPrimitive.Root>,
+  SliderProps
+>(({ className, trackClassName, rangeClassName, thumbClassName, ...props }, ref) => (
+  <SliderPrimitive.Root
+    ref={ref}
+    className={cn(
+      "relative flex w-full touch-none select-none items-center",
+      className
+    )}
+    {...props}
+  >
+    <SliderPrimitive.Track
+      className={cn(
+        "relative h-3 w-full grow overflow-hidden rounded-full bg-white/10",
+        trackClassName
+      )}
+    >
+      <SliderPrimitive.Range 
+        className={cn(
+          "absolute h-full bg-primary rounded-full",
+          rangeClassName
+        )} 
+      />
+    </SliderPrimitive.Track>
+    <SliderPrimitive.Thumb
+      className={cn(
+        "block h-6 w-6 rounded-full border-2 border-white bg-white shadow-lg",
+        "ring-offset-background transition-all duration-150",
+        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
+        "hover:scale-110 active:scale-105",
+        "disabled:pointer-events-none disabled:opacity-50",
+        "cursor-grab active:cursor-grabbing",
+        thumbClassName
+      )}
+    />
+  </SliderPrimitive.Root>
+))
+Slider.displayName = SliderPrimitive.Root.displayName
+
+export { Slider }

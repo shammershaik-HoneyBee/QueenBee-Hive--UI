@@ -34,10 +34,24 @@ type ProvisioningStatusType =
     | 'idle'
     | 'connecting_wifi'
     | 'wifi_connected'
+    | 'wifi_failed'
+    | 'ble_paired'
+    | 'api_requesting'
+    | 'api_success'
+    | 'api_failed'
+    | 'api_resources_reused'
     | 'provisioning'
     | 'starting_tunnel'
+    | 'tunnel_connected'
+    | 'tunnel_error'
+    | 'tunnel_repairing'
+    | 'tunnel_recreating'
+    | 'retrying'
+    | 'retry_available'
+    | 'provisioned'
     | 'success'
-    | 'error';
+    | 'error'
+    | 'health_update';
 
 interface ProvisioningStatus {
     status: ProvisioningStatusType;
@@ -47,6 +61,54 @@ interface ProvisioningStatus {
     dashboard_hostname?: string;
     error_details?: string;
     retry_count?: number;
+    max_retries?: number;
+    // New fields for state-driven provisioning
+    can_retry?: boolean;
+    tunnel_healthy?: boolean;
+    consecutive_failures?: number;
+    recovery_action?: string;
+    serial_number?: string;
+    is_new_provision?: boolean;
+}
+
+// Voice agent status types (matching honeybee-voice-agent IPC)
+type VoiceAgentEventType =
+    | 'session_started'
+    | 'session_ended'
+    | 'token_refreshed'
+    | 'token_error'
+    | 'quota_warning'
+    | 'quota_exceeded'
+    | 'network_error'
+    | 'error'
+    | 'quota_status'
+    | 'ready'
+    | 'listening';
+
+interface QuotaInfo {
+    daily_limit: number;
+    daily_usage: number;
+    daily_remaining: number;
+    monthly_limit: number;
+    monthly_usage: number;
+    monthly_remaining: number;
+    daily_percent_used: number;
+    monthly_percent_used: number;
+}
+
+interface TokenInfo {
+    expires_in_seconds: number;
+    is_valid: boolean;
+}
+
+interface VoiceAgentStatus {
+    event: VoiceAgentEventType;
+    message: string;
+    timestamp?: string;
+    quota?: QuotaInfo;
+    token?: TokenInfo;
+    error_details?: string;
+    recoverable?: boolean;
 }
 
 function EyeTracker() {
@@ -65,6 +127,7 @@ function EyeTracker() {
     const wifiPollIntervalRef = useRef<number | null>(null);
     const successBannerTimeoutRef = useRef<number | null>(null);
     const hasShownSuccessBannerRef = useRef<boolean>(false);
+    const voiceAgentErrorTimeoutRef = useRef<number | null>(null);
 
     const [isLoading, setIsLoading] = useState(true);
     const [showSettings, setShowSettings] = useState(false);
@@ -81,6 +144,12 @@ function EyeTracker() {
     // Provisioning state
     const [provisioningStatus, setProvisioningStatus] = useState<ProvisioningStatus | null>(null);
     const provisioningSuccessTimeoutRef = useRef<number | null>(null);
+    
+    // Voice agent state
+    const [voiceAgentStatus, setVoiceAgentStatus] = useState<VoiceAgentStatus | null>(null);
+    const [quotaInfo, setQuotaInfo] = useState<QuotaInfo | null>(null);
+    const [voiceAgentError, setVoiceAgentError] = useState<VoiceAgentStatus | null>(null);
+    const [showQuotaWarning, setShowQuotaWarning] = useState(false);
 
     // Check WiFi status
     const checkWifiStatus = useCallback(async () => {
@@ -175,6 +244,48 @@ function EyeTracker() {
             }
         });
 
+        // Listen for voice agent status updates
+        const unlistenVoiceAgentPromise = listen<VoiceAgentStatus>('voice-agent-status', (event) => {
+            console.log('Voice agent status update:', event.payload);
+            setVoiceAgentStatus(event.payload);
+            
+            // Update quota info if present
+            if (event.payload.quota) {
+                setQuotaInfo(event.payload.quota);
+            }
+            
+            // Show quota warning for quota_warning and quota_exceeded events
+            if (event.payload.event === 'quota_warning' || event.payload.event === 'quota_exceeded') {
+                setShowQuotaWarning(true);
+                // Auto-hide after 30 seconds for warnings
+                if (event.payload.event === 'quota_warning') {
+                    setTimeout(() => setShowQuotaWarning(false), 30000);
+                }
+            }
+        });
+
+        // Listen for voice agent errors specifically
+        const unlistenVoiceAgentErrorPromise = listen<VoiceAgentStatus>('voice-agent-error', (event) => {
+            console.log('Voice agent error:', event.payload);
+            setVoiceAgentError(event.payload);
+            
+            // Clear error after 15 seconds for recoverable errors
+            if (event.payload.recoverable) {
+                if (voiceAgentErrorTimeoutRef.current) {
+                    clearTimeout(voiceAgentErrorTimeoutRef.current);
+                }
+                voiceAgentErrorTimeoutRef.current = window.setTimeout(() => {
+                    setVoiceAgentError(null);
+                }, 15000);
+            }
+        });
+
+        // Listen for quota updates specifically
+        const unlistenVoiceAgentQuotaPromise = listen<QuotaInfo>('voice-agent-quota', (event) => {
+            console.log('Voice agent quota update:', event.payload);
+            setQuotaInfo(event.payload);
+        });
+
         return () => {
             if (wifiPollIntervalRef.current) {
                 clearInterval(wifiPollIntervalRef.current);
@@ -185,8 +296,14 @@ function EyeTracker() {
             if (provisioningSuccessTimeoutRef.current) {
                 clearTimeout(provisioningSuccessTimeoutRef.current);
             }
+            if (voiceAgentErrorTimeoutRef.current) {
+                clearTimeout(voiceAgentErrorTimeoutRef.current);
+            }
             unlistenQrPromise.then(unlisten => unlisten());
             unlistenProvisioningPromise.then(unlisten => unlisten());
+            unlistenVoiceAgentPromise.then(unlisten => unlisten());
+            unlistenVoiceAgentErrorPromise.then(unlisten => unlisten());
+            unlistenVoiceAgentQuotaPromise.then(unlisten => unlisten());
         };
     }, [checkWifiStatus, fetchQrCode]);
 
@@ -498,21 +615,51 @@ function EyeTracker() {
     
     // Determine if provisioning overlay should be shown
     const showProvisioningOverlay = provisioningStatus && 
-        ['connecting_wifi', 'wifi_connected', 'provisioning', 'starting_tunnel', 'success', 'error'].includes(provisioningStatus.status);
+        [
+            'connecting_wifi', 'wifi_connected', 'wifi_failed', 'ble_paired',
+            'api_requesting', 'api_success', 'api_failed', 'api_resources_reused',
+            'provisioning', 'starting_tunnel', 'tunnel_connected', 'tunnel_error',
+            'tunnel_repairing', 'tunnel_recreating', 'retrying', 'retry_available',
+            'provisioned', 'success', 'error'
+        ].includes(provisioningStatus.status);
 
     // Get provisioning status display info
     const getProvisioningDisplayInfo = () => {
         if (!provisioningStatus) return { icon: '', title: '', color: '' };
         
         switch (provisioningStatus.status) {
+            case 'ble_paired':
+                return { icon: '📲', title: 'Mobile App Connected', color: 'rgba(59, 130, 246, 0.95)' };
             case 'connecting_wifi':
                 return { icon: '📶', title: 'Connecting to WiFi...', color: 'rgba(59, 130, 246, 0.95)' };
             case 'wifi_connected':
                 return { icon: '✅', title: 'WiFi Connected', color: 'rgba(34, 197, 94, 0.95)' };
+            case 'wifi_failed':
+                return { icon: '❌', title: 'WiFi Connection Failed', color: 'rgba(239, 68, 68, 0.95)' };
+            case 'api_requesting':
             case 'provisioning':
-                return { icon: '🔐', title: 'Provisioning Device...', color: 'rgba(139, 92, 246, 0.95)' };
+                return { icon: '🔐', title: 'Activating Device...', color: 'rgba(139, 92, 246, 0.95)' };
+            case 'api_success':
+                return { icon: '✅', title: 'Device Activated', color: 'rgba(34, 197, 94, 0.95)' };
+            case 'api_failed':
+                return { icon: '❌', title: 'Activation Failed', color: 'rgba(239, 68, 68, 0.95)' };
+            case 'api_resources_reused':
+                return { icon: '🔄', title: 'Configuration Retrieved', color: 'rgba(34, 197, 94, 0.95)' };
             case 'starting_tunnel':
                 return { icon: '🚀', title: 'Starting Secure Tunnel...', color: 'rgba(236, 72, 153, 0.95)' };
+            case 'tunnel_connected':
+                return { icon: '🔒', title: 'Tunnel Connected', color: 'rgba(34, 197, 94, 0.95)' };
+            case 'tunnel_error':
+                return { icon: '⚠️', title: 'Tunnel Error', color: 'rgba(245, 158, 11, 0.95)' };
+            case 'tunnel_repairing':
+                return { icon: '🔧', title: 'Repairing Connection...', color: 'rgba(245, 158, 11, 0.95)' };
+            case 'tunnel_recreating':
+                return { icon: '🔨', title: 'Recreating Tunnel...', color: 'rgba(245, 158, 11, 0.95)' };
+            case 'retrying':
+                return { icon: '🔄', title: 'Retrying...', color: 'rgba(59, 130, 246, 0.95)' };
+            case 'retry_available':
+                return { icon: '🔄', title: 'Retry Available', color: 'rgba(245, 158, 11, 0.95)' };
+            case 'provisioned':
             case 'success':
                 return { icon: '🎉', title: 'Setup Complete!', color: 'rgba(34, 197, 94, 0.95)' };
             case 'error':
@@ -523,6 +670,19 @@ function EyeTracker() {
     };
     
     const provisioningDisplay = getProvisioningDisplayInfo();
+    
+    // Check if current status allows retry button
+    const canRetry = provisioningStatus?.can_retry || 
+        ['wifi_failed', 'api_failed', 'tunnel_error', 'retry_available', 'error'].includes(provisioningStatus?.status || '');
+    
+    // Trigger retry from kiosk UI
+    const handleRetry = async () => {
+        try {
+            await invoke('trigger_provisioning_retry');
+        } catch (error) {
+            console.error('Failed to trigger retry:', error);
+        }
+    };
 
     return (
         <div
@@ -820,7 +980,9 @@ function EyeTracker() {
                         )}
                         
                         {/* Error Details */}
-                        {provisioningStatus.status === 'error' && (
+                        {(provisioningStatus.status === 'error' || provisioningStatus.status === 'wifi_failed' || 
+                          provisioningStatus.status === 'api_failed' || provisioningStatus.status === 'tunnel_error' ||
+                          provisioningStatus.status === 'retry_available') && (
                             <div
                                 style={{
                                     backgroundColor: 'rgba(0, 0, 0, 0.2)',
@@ -852,22 +1014,265 @@ function EyeTracker() {
                                             textAlign: 'center',
                                         }}
                                     >
-                                        Attempt {provisioningStatus.retry_count} of 3
+                                        Attempt {provisioningStatus.retry_count} of {provisioningStatus.max_retries || 3}
                                     </p>
                                 )}
-                                <p
-                                    style={{
-                                        margin: '15px 0 0 0',
-                                        color: 'rgba(255, 255, 255, 0.8)',
-                                        fontSize: '14px',
-                                        textAlign: 'center',
-                                    }}
-                                >
-                                    Please try again from the mobile app
-                                </p>
+                                
+                                {/* Retry Button */}
+                                {canRetry && (
+                                    <button
+                                        onClick={handleRetry}
+                                        style={{
+                                            display: 'block',
+                                            width: '100%',
+                                            marginTop: '15px',
+                                            padding: '12px 24px',
+                                            backgroundColor: 'rgba(255, 255, 255, 0.2)',
+                                            color: '#fff',
+                                            border: '2px solid rgba(255, 255, 255, 0.5)',
+                                            borderRadius: '8px',
+                                            fontSize: '16px',
+                                            fontWeight: 'bold',
+                                            cursor: 'pointer',
+                                            transition: 'all 0.2s ease',
+                                        }}
+                                        onMouseOver={(e) => {
+                                            e.currentTarget.style.backgroundColor = 'rgba(255, 255, 255, 0.3)';
+                                            e.currentTarget.style.borderColor = 'rgba(255, 255, 255, 0.8)';
+                                        }}
+                                        onMouseOut={(e) => {
+                                            e.currentTarget.style.backgroundColor = 'rgba(255, 255, 255, 0.2)';
+                                            e.currentTarget.style.borderColor = 'rgba(255, 255, 255, 0.5)';
+                                        }}
+                                    >
+                                        🔄 Retry Provisioning
+                                    </button>
+                                )}
+                                
+                                {!canRetry && (
+                                    <p
+                                        style={{
+                                            margin: '15px 0 0 0',
+                                            color: 'rgba(255, 255, 255, 0.8)',
+                                            fontSize: '14px',
+                                            textAlign: 'center',
+                                        }}
+                                    >
+                                        Please try again from the mobile app
+                                    </p>
+                                )}
                             </div>
                         )}
                     </div>
+                </div>
+            )}
+
+            {/* Voice Agent Quota Display - shown in corner when quota info available */}
+            {quotaInfo && !showProvisioningOverlay && !showQrOverlay && (
+                <div
+                    style={{
+                        position: 'absolute',
+                        bottom: '20px',
+                        left: '20px',
+                        backgroundColor: quotaInfo.daily_percent_used > 80 
+                            ? 'rgba(239, 68, 68, 0.9)' 
+                            : quotaInfo.daily_percent_used > 50 
+                                ? 'rgba(245, 158, 11, 0.9)' 
+                                : 'rgba(34, 197, 94, 0.85)',
+                        padding: '12px 18px',
+                        borderRadius: '12px',
+                        boxShadow: '0 4px 15px rgba(0, 0, 0, 0.3)',
+                        zIndex: 50,
+                        minWidth: '180px',
+                    }}
+                >
+                    <div style={{ display: 'flex', alignItems: 'center', marginBottom: '8px' }}>
+                        <span style={{ fontSize: '18px', marginRight: '8px' }}>
+                            {quotaInfo.daily_percent_used > 80 ? '⚠️' : '📊'}
+                        </span>
+                        <span style={{ color: '#fff', fontSize: '14px', fontWeight: 'bold' }}>
+                            Daily Quota
+                        </span>
+                    </div>
+                    <div style={{ 
+                        backgroundColor: 'rgba(255, 255, 255, 0.2)', 
+                        borderRadius: '6px', 
+                        height: '8px',
+                        marginBottom: '6px',
+                        overflow: 'hidden',
+                    }}>
+                        <div style={{
+                            backgroundColor: '#fff',
+                            height: '100%',
+                            width: `${Math.min(100, quotaInfo.daily_percent_used)}%`,
+                            borderRadius: '6px',
+                            transition: 'width 0.3s ease',
+                        }} />
+                    </div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', color: '#fff', fontSize: '12px' }}>
+                        <span>{quotaInfo.daily_remaining} left</span>
+                        <span>{quotaInfo.daily_usage} / {quotaInfo.daily_limit}</span>
+                    </div>
+                </div>
+            )}
+
+            {/* Voice Agent Error Notification - shown as toast in top-right */}
+            {voiceAgentError && (
+                <div
+                    style={{
+                        position: 'absolute',
+                        top: '20px',
+                        left: '50%',
+                        transform: 'translateX(-50%)',
+                        backgroundColor: voiceAgentError.event === 'quota_exceeded' 
+                            ? 'rgba(239, 68, 68, 0.95)' 
+                            : voiceAgentError.event === 'network_error'
+                                ? 'rgba(245, 158, 11, 0.95)'
+                                : 'rgba(239, 68, 68, 0.95)',
+                        padding: '16px 24px',
+                        borderRadius: '12px',
+                        boxShadow: '0 8px 25px rgba(0, 0, 0, 0.3)',
+                        zIndex: 300,
+                        maxWidth: '500px',
+                        animation: 'slideDown 0.3s ease-out',
+                    }}
+                >
+                    <div style={{ display: 'flex', alignItems: 'center', marginBottom: '8px' }}>
+                        <span style={{ fontSize: '24px', marginRight: '12px' }}>
+                            {voiceAgentError.event === 'quota_exceeded' ? '🚫' 
+                                : voiceAgentError.event === 'network_error' ? '🌐' 
+                                : voiceAgentError.event === 'token_error' ? '🔐'
+                                : '❌'}
+                        </span>
+                        <span style={{ color: '#fff', fontSize: '18px', fontWeight: 'bold' }}>
+                            {voiceAgentError.event === 'quota_exceeded' ? 'Quota Exceeded'
+                                : voiceAgentError.event === 'network_error' ? 'Network Error'
+                                : voiceAgentError.event === 'token_error' ? 'Authentication Error'
+                                : 'Voice Agent Error'}
+                        </span>
+                    </div>
+                    <p style={{ margin: 0, color: 'rgba(255, 255, 255, 0.95)', fontSize: '14px' }}>
+                        {voiceAgentError.message}
+                    </p>
+                    {voiceAgentError.error_details && (
+                        <p style={{ 
+                            margin: '8px 0 0 0', 
+                            color: 'rgba(255, 255, 255, 0.75)', 
+                            fontSize: '12px',
+                            fontStyle: 'italic',
+                        }}>
+                            {voiceAgentError.error_details}
+                        </p>
+                    )}
+                    {voiceAgentError.recoverable && (
+                        <p style={{ 
+                            margin: '10px 0 0 0', 
+                            color: 'rgba(255, 255, 255, 0.9)', 
+                            fontSize: '13px',
+                        }}>
+                            Will retry automatically...
+                        </p>
+                    )}
+                    <button
+                        onClick={() => setVoiceAgentError(null)}
+                        style={{
+                            position: 'absolute',
+                            top: '8px',
+                            right: '8px',
+                            backgroundColor: 'transparent',
+                            border: 'none',
+                            color: 'rgba(255, 255, 255, 0.7)',
+                            fontSize: '18px',
+                            cursor: 'pointer',
+                            padding: '4px 8px',
+                        }}
+                    >
+                        ✕
+                    </button>
+                </div>
+            )}
+
+            {/* Quota Warning Banner - shown prominently when quota is low */}
+            {showQuotaWarning && quotaInfo && !showProvisioningOverlay && (
+                <div
+                    style={{
+                        position: 'absolute',
+                        bottom: '100px',
+                        left: '50%',
+                        transform: 'translateX(-50%)',
+                        backgroundColor: quotaInfo.daily_remaining === 0 
+                            ? 'rgba(239, 68, 68, 0.95)' 
+                            : 'rgba(245, 158, 11, 0.95)',
+                        padding: '20px 30px',
+                        borderRadius: '16px',
+                        boxShadow: '0 8px 30px rgba(0, 0, 0, 0.4)',
+                        zIndex: 250,
+                        textAlign: 'center',
+                        animation: 'pulse 2s infinite',
+                    }}
+                >
+                    <div style={{ fontSize: '40px', marginBottom: '10px' }}>
+                        {quotaInfo.daily_remaining === 0 ? '🚫' : '⚠️'}
+                    </div>
+                    <h3 style={{ margin: '0 0 8px 0', color: '#fff', fontSize: '20px' }}>
+                        {quotaInfo.daily_remaining === 0 ? 'Daily Quota Exceeded' : 'Quota Running Low'}
+                    </h3>
+                    <p style={{ margin: 0, color: 'rgba(255, 255, 255, 0.9)', fontSize: '16px' }}>
+                        {quotaInfo.daily_remaining === 0 
+                            ? 'Voice commands unavailable until tomorrow'
+                            : `Only ${quotaInfo.daily_remaining} requests remaining today`}
+                    </p>
+                    <button
+                        onClick={() => setShowQuotaWarning(false)}
+                        style={{
+                            marginTop: '15px',
+                            padding: '8px 20px',
+                            backgroundColor: 'rgba(255, 255, 255, 0.2)',
+                            color: '#fff',
+                            border: '1px solid rgba(255, 255, 255, 0.5)',
+                            borderRadius: '8px',
+                            cursor: 'pointer',
+                            fontSize: '14px',
+                        }}
+                    >
+                        Dismiss
+                    </button>
+                </div>
+            )}
+
+            {/* Voice Agent Status Indicator - small icon in bottom-right */}
+            {voiceAgentStatus && !showProvisioningOverlay && !showQrOverlay && (
+                <div
+                    style={{
+                        position: 'absolute',
+                        bottom: '20px',
+                        right: '20px',
+                        backgroundColor: voiceAgentStatus.event === 'listening' 
+                            ? 'rgba(59, 130, 246, 0.9)' 
+                            : voiceAgentStatus.event === 'session_started'
+                                ? 'rgba(139, 92, 246, 0.9)'
+                                : 'rgba(107, 114, 128, 0.8)',
+                        padding: '10px 16px',
+                        borderRadius: '20px',
+                        boxShadow: '0 4px 15px rgba(0, 0, 0, 0.3)',
+                        zIndex: 50,
+                        display: 'flex',
+                        alignItems: 'center',
+                        animation: voiceAgentStatus.event === 'listening' ? 'pulse 1.5s infinite' : 'none',
+                    }}
+                >
+                    <span style={{ fontSize: '18px', marginRight: '8px' }}>
+                        {voiceAgentStatus.event === 'listening' ? '🎤' 
+                            : voiceAgentStatus.event === 'session_started' ? '✨'
+                            : voiceAgentStatus.event === 'ready' ? '👂'
+                            : '🤖'}
+                    </span>
+                    <span style={{ color: '#fff', fontSize: '13px', fontWeight: '500' }}>
+                        {voiceAgentStatus.event === 'listening' ? 'Listening...'
+                            : voiceAgentStatus.event === 'session_started' ? 'Session Active'
+                            : voiceAgentStatus.event === 'ready' ? 'Ready'
+                            : voiceAgentStatus.message.slice(0, 30)}
+                    </span>
                 </div>
             )}
 

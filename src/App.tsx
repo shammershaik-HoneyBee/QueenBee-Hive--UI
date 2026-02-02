@@ -1,9 +1,12 @@
 import EyeTracker from './components/EyeTracker';
-import './App.css';
+import { SystemOverlay } from './components/overlay/SystemOverlay';
 
 function App() {
-  return <EyeTracker />;
+  return (
+    <SystemOverlay>
+      <EyeTracker />
+    </SystemOverlay>
+  );
 }
 
 export default App;
-
